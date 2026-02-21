@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Large model files (downloaded by install.sh)
+models/TTS/*.onnx
+models/TTS/*.bin

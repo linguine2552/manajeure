@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "manajeure"
+version = "0.1.0"
+description = "Talk to your robot assistants — voice interface for AI agents"
+requires-python = ">=3.11"
+dependencies = [
+    "pynput",
+    "faster-whisper",
+    "onnxruntime-gpu",
+    "sounddevice",
+    "numpy",
+]
+
+[project.scripts]
+manajeure = "manajeure.daemon:main"
