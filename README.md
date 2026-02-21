@@ -22,7 +22,7 @@ Works with Claude Code, Discord, Slack, your terminal — anything with a text i
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/manajeure.git
+git clone https://github.com/linguine2552/manajeure.git
 cd manajeure
 ./install.sh   # downloads models (~300MB), sets up venv, configures Claude Code hook
 ```
