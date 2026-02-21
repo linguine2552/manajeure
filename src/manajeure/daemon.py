@@ -64,11 +64,15 @@ def inject_text(text: str):
         import ctypes
         import ctypes.wintypes
         _set_clipboard_win(text)
-        _kb_ctl.hotkey(Key.ctrl, 'v')
+        with _kb_ctl.pressed(Key.ctrl):
+            _kb_ctl.press('v')
+            _kb_ctl.release('v')
     else:
         import subprocess
         subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
-        _kb_ctl.hotkey(Key.ctrl, Key.shift, 'v')
+        with _kb_ctl.pressed(Key.ctrl, Key.shift):
+            _kb_ctl.press('v')
+            _kb_ctl.release('v')
     time.sleep(0.15)
     _kb_ctl.press(Key.enter)
     _kb_ctl.release(Key.enter)
