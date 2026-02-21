@@ -19,12 +19,14 @@ error() { echo -e "${RED}[x]${NC} $*"; }
 # ── System dependencies (Linux only) ────────────────────────────────────────
 
 if [[ "$(uname)" == "Linux" ]]; then
-    if ! command -v xclip &>/dev/null; then
-        info "Installing xclip..."
-        sudo apt install -y xclip 2>/dev/null || warn "Could not install xclip via apt — install it manually"
-    else
-        info "xclip already installed"
-    fi
+    for tool in xclip xdotool; do
+        if ! command -v "$tool" &>/dev/null; then
+            info "Installing $tool..."
+            sudo apt install -y "$tool" 2>/dev/null || warn "Could not install $tool via apt — install it manually"
+        else
+            info "$tool already installed"
+        fi
+    done
 fi
 
 # ── Model files ──────────────────────────────────────────────────────────────
@@ -150,9 +152,14 @@ echo ""
 info "Installation complete!"
 echo ""
 echo "  Usage:"
-echo "    1. Run the daemon:    $VENV_DIR/bin/python $SCRIPT_DIR/src/manajeure/daemon.py [glados|kokoro]"
-echo "       (default: glados)"
+echo "    1. Run the daemon:    $VENV_DIR/bin/python $SCRIPT_DIR/src/manajeure/daemon.py [glados|kokoro] [options]"
+echo "       (default: glados voice, Right Ctrl trigger, auto text injection)"
 echo "    2. Open Claude Code (or any app) in another window"
-echo "    3. Hold Right Ctrl to record, release to send"
+echo "    3. Hold the trigger key to record, release to send"
 echo "    4. Agent responses will be spoken automatically"
+echo ""
+echo "  Options:  --key KEY        trigger key (default: ctrl_r, try scroll_lock for games)"
+echo "            --inject METHOD  xdotool|clipboard|auto (default: auto)"
+echo "            --no-enter       skip Enter after injection"
+echo "            --suppress       suppress trigger key from other apps (X11, adds latency)"
 echo ""

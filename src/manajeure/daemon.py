@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """manajeure daemon: voice interface for AI agents.
 
-Press Right Ctrl to record, release to transcribe and inject into the focused window.
+Hold a trigger key to record, release to transcribe and inject into the focused window.
 Agent responses arrive via socket and are spoken via GLaDOS/Kokoro TTS.
 """
 
+import argparse
 import json
 import os
 import platform
 import queue
 import re
 import selectors
+import shutil
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -58,27 +61,57 @@ def strip_markdown(text: str) -> str:
 
 _kb_ctl = KeyboardController()
 
+# Resolved at startup by parse_args(); used by inject_text()
+_inject_method: str = "auto"
+_send_enter: bool = True
+
 def inject_text(text: str):
-    """Copy text to clipboard and simulate paste + Enter in the focused window."""
+    """Inject text into the focused window, then optionally press Enter."""
     if IS_WINDOWS:
-        import ctypes
-        import ctypes.wintypes
-        _set_clipboard_win(text)
-        with _kb_ctl.pressed(Key.ctrl):
-            _kb_ctl.press('v')
-            _kb_ctl.release('v')
+        _inject_text_windows(text)
     else:
-        import subprocess
-        subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
-        with _kb_ctl.pressed(Key.ctrl, Key.shift):
-            _kb_ctl.press('v')
-            _kb_ctl.release('v')
-    time.sleep(0.15)
-    _kb_ctl.press(Key.enter)
-    _kb_ctl.release(Key.enter)
+        _inject_text_linux(text)
+    if _send_enter:
+        time.sleep(0.15)
+        _kb_ctl.press(Key.enter)
+        _kb_ctl.release(Key.enter)
+
+def _inject_text_windows(text: str):
+    _set_clipboard_win(text)
+    with _kb_ctl.pressed(Key.ctrl):
+        _kb_ctl.press('v')
+        _kb_ctl.release('v')
+
+def _inject_text_linux(text: str):
+    method = _inject_method
+    if method == "auto":
+        method = "xdotool" if shutil.which("xdotool") else "clipboard"
+    if method == "xdotool":
+        if not _inject_xdotool(text):
+            _inject_clipboard_linux(text)
+    else:
+        _inject_clipboard_linux(text)
+
+def _inject_xdotool(text: str) -> bool:
+    """Type text via xdotool --clearmodifiers. Returns True on success."""
+    try:
+        time.sleep(0.2)  # let trigger key release propagate
+        subprocess.run(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "12", "--", text],
+            check=True, timeout=10,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        print(f"manajeure: xdotool failed ({e}), falling back to clipboard", file=sys.stderr)
+        return False
+
+def _inject_clipboard_linux(text: str):
+    subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
+    with _kb_ctl.pressed(Key.ctrl, Key.shift):
+        _kb_ctl.press('v')
+        _kb_ctl.release('v')
 
 def _set_clipboard_win(text: str):
-    """Set clipboard on Windows using ctypes (no external deps)."""
     import ctypes
     kernel32 = ctypes.windll.kernel32
     user32 = ctypes.windll.user32
@@ -252,36 +285,94 @@ class KokoroTTS:
         return np.array(audio, dtype=np.float32)
 
 
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def _resolve_trigger_key(name: str) -> keyboard.Key:
+    """Map a CLI key name (e.g. 'scroll_lock') to a pynput Key enum member."""
+    members = {k: v for k, v in Key.__members__.items()}
+    if name in members:
+        return members[name]
+    print(f"manajeure: unknown key '{name}'", file=sys.stderr)
+    print(f"  available keys: {', '.join(sorted(members))}", file=sys.stderr)
+    sys.exit(1)
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        prog="manajeure",
+        description="Voice interface for AI agents",
+    )
+    p.add_argument("voice", nargs="?", default="glados", choices=["glados", "kokoro"],
+                   help="TTS voice (default: glados)")
+    p.add_argument("--key", default="ctrl_r", metavar="KEY",
+                   help="trigger key name, e.g. scroll_lock, pause, f13 (default: ctrl_r)")
+    p.add_argument("--no-enter", action="store_true",
+                   help="skip Enter keypress after text injection")
+    p.add_argument("--inject", default="auto", choices=["auto", "xdotool", "clipboard"],
+                   help="text injection method (default: auto — tries xdotool, falls back to clipboard)")
+    p.add_argument("--suppress", action="store_true",
+                   help="suppress trigger key from reaching other apps (X11 only, adds latency)")
+    return p.parse_args(argv)
+
+
 # ── Main event loop ─────────────────────────────────────────────────────────
 
 def main():
-    voice = sys.argv[1] if len(sys.argv) > 1 else "glados"
+    global _inject_method, _send_enter
+
+    args = parse_args()
+    trigger_key = _resolve_trigger_key(args.key)
+    _inject_method = args.inject
+    _send_enter = not args.no_enter
 
     print("manajeure: loading models...")
     whisper = WhisperModel("base", device="cuda", compute_type="float16")
     phonemizer = Phonemizer()
 
-    if voice == "glados":
+    if args.voice == "glados":
         tts = GladosTTS(phonemizer)
     else:
         tts = KokoroTTS(phonemizer)
     tts_rate = tts.SAMPLE_RATE
-    print(f"manajeure: models loaded (voice={voice}, rate={tts_rate})")
+    print(f"manajeure: models loaded (voice={args.voice}, rate={tts_rate})")
 
     # Key events from pynput thread -> main thread
     key_events: queue.Queue[str] = queue.Queue()
 
-    def on_press(key):
-        if key == keyboard.Key.ctrl_r:
-            key_events.put("press")
+    if args.suppress and not IS_WINDOWS:
+        # Suppress mode: grab all keys, re-inject non-trigger keys
+        def on_press(key):
+            if key == trigger_key:
+                key_events.put("press")
+            else:
+                try:
+                    _kb_ctl.press(key)
+                except Exception:
+                    pass
 
-    def on_release(key):
-        if key == keyboard.Key.ctrl_r:
-            key_events.put("release")
+        def on_release(key):
+            if key == trigger_key:
+                key_events.put("release")
+            else:
+                try:
+                    _kb_ctl.release(key)
+                except Exception:
+                    pass
 
-    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        listener = keyboard.Listener(on_press=on_press, on_release=on_release, suppress=True)
+    else:
+        def on_press(key):
+            if key == trigger_key:
+                key_events.put("press")
+
+        def on_release(key):
+            if key == trigger_key:
+                key_events.put("release")
+
+        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+
     listener.start()
-    print("manajeure: keyboard listener started")
+    suppress_note = " (suppress=on)" if args.suppress and not IS_WINDOWS else ""
+    print(f"manajeure: keyboard listener started{suppress_note}")
 
     # Socket for TTS (Unix socket on Linux/macOS, TCP loopback on Windows)
     if IS_WINDOWS:
@@ -392,7 +483,8 @@ def main():
             print(f"manajeure: speaking {len(text)} chars")
             speak_text(text)
 
-    print("manajeure: ready — hold Right Ctrl to talk")
+    key_name = args.key.replace("_", " ").title()
+    print(f"manajeure: ready — hold {key_name} to talk")
 
     try:
         while True:
