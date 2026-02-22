@@ -61,9 +61,10 @@ def strip_markdown(text: str) -> str:
 
 _kb_ctl = KeyboardController()
 
-# Resolved at startup by parse_args(); used by inject_text()
+# Resolved at startup by parse_args(); used by inject_text() / speak_text()
 _inject_method: str = "auto"
 _send_enter: bool = True
+_volume: float = 1.0
 
 def inject_text(text: str):
     """Inject text into the focused window, then optionally press Enter."""
@@ -311,18 +312,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="text injection method (default: auto — tries xdotool, falls back to clipboard)")
     p.add_argument("--suppress", action="store_true",
                    help="suppress trigger key from reaching other apps (X11 only, adds latency)")
+    p.add_argument("--volume", type=int, default=100, metavar="PCT",
+                   help="TTS playback volume, 0-100 (default: 100)")
     return p.parse_args(argv)
 
 
 # ── Main event loop ─────────────────────────────────────────────────────────
 
 def main():
-    global _inject_method, _send_enter
+    global _inject_method, _send_enter, _volume
 
     args = parse_args()
     trigger_key = _resolve_trigger_key(args.key)
     _inject_method = args.inject
     _send_enter = not args.no_enter
+    _volume = max(0, min(100, args.volume)) / 100.0
 
     print("manajeure: loading models...")
     whisper = WhisperModel("base", device="cuda", compute_type="float16")
@@ -333,7 +337,7 @@ def main():
     else:
         tts = KokoroTTS(phonemizer)
     tts_rate = tts.SAMPLE_RATE
-    print(f"manajeure: models loaded (voice={args.voice}, rate={tts_rate})")
+    print(f"manajeure: models loaded (voice={args.voice}, rate={tts_rate}, volume={args.volume}%)")
 
     # Key events from pynput thread -> main thread
     key_events: queue.Queue[str] = queue.Queue()
@@ -462,6 +466,8 @@ def main():
                 if first:
                     audio = np.concatenate([bt_pad, audio])
                     first = False
+                if _volume < 1.0:
+                    audio = audio * _volume
                 sd.play(audio, tts_rate)
                 deadline = time.monotonic() + len(audio) / tts_rate
                 while time.monotonic() < deadline:
