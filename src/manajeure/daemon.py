@@ -312,6 +312,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="text injection method (default: auto — tries xdotool, falls back to clipboard)")
     p.add_argument("--suppress", action="store_true",
                    help="suppress trigger key from reaching other apps (X11 only, adds latency)")
+    p.add_argument("--no-tts", action="store_true",
+                   help="disable TTS entirely — STT only, skips loading TTS models")
     p.add_argument("--volume", type=int, default=100, metavar="PCT",
                    help="TTS playback volume, 0-100 (default: 100)")
     return p.parse_args(argv)
@@ -330,14 +332,19 @@ def main():
 
     print("manajeure: loading models...")
     whisper = WhisperModel("base", device="cuda", compute_type="float16")
-    phonemizer = Phonemizer()
 
-    if args.voice == "glados":
-        tts = GladosTTS(phonemizer)
+    if args.no_tts:
+        tts = None
+        tts_rate = None
+        print("manajeure: models loaded (STT only, TTS disabled)")
     else:
-        tts = KokoroTTS(phonemizer)
-    tts_rate = tts.SAMPLE_RATE
-    print(f"manajeure: models loaded (voice={args.voice}, rate={tts_rate}, volume={args.volume}%)")
+        phonemizer = Phonemizer()
+        if args.voice == "glados":
+            tts = GladosTTS(phonemizer)
+        else:
+            tts = KokoroTTS(phonemizer)
+        tts_rate = tts.SAMPLE_RATE
+        print(f"manajeure: models loaded (voice={args.voice}, rate={tts_rate}, volume={args.volume}%)")
 
     # Key events from pynput thread -> main thread
     key_events: queue.Queue[str] = queue.Queue()
@@ -447,9 +454,11 @@ def main():
         return False
 
     # Bluetooth A2DP wake-up: 500ms silence prepended to first chunk
-    bt_pad = np.zeros(int(tts_rate * 0.5), dtype=np.float32)
+    bt_pad = np.zeros(int(tts_rate * 0.5), dtype=np.float32) if tts else None
 
     def speak_text(text: str):
+        if not tts:
+            return
         cleaned = strip_markdown(text)
         if not cleaned:
             return
@@ -486,8 +495,11 @@ def main():
         conn.close()
         text = data.decode("utf-8", errors="replace")
         if text:
-            print(f"manajeure: speaking {len(text)} chars")
-            speak_text(text)
+            if tts:
+                print(f"manajeure: speaking {len(text)} chars")
+                speak_text(text)
+            else:
+                print(f"manajeure: received {len(text)} chars (TTS disabled, ignoring)")
 
     key_name = args.key.replace("_", " ").title()
     print(f"manajeure: ready — hold {key_name} to talk")
